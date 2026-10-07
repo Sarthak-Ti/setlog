@@ -12,10 +12,10 @@ function storeFor(key:string):LocalStore{
  const fallbackKey='setlog-v2:'+key;
  return {
   async read(){let raw:LocalRecord|null=null;try{const db=await openDB();raw=await new Promise((resolve,reject)=>{const req=db.transaction('notebooks').objectStore('notebooks').get(key);req.onsuccess=()=>resolve(req.result??null);req.onerror=()=>reject(req.error);});}catch{fallback=true;}
-   const alt=localStorage.getItem(fallbackKey);if(alt)raw=JSON.parse(alt);
+   let alt:string|null=null;try{alt=localStorage.getItem(fallbackKey);}catch(e){if(fallback)throw e;}if(alt)raw=JSON.parse(alt);
    if(raw){raw.state=parseState(raw.state);if(raw.base)raw.base=parseState(raw.base);}return raw;
   },
-  async write(record){if(fallback){localStorage.setItem(fallbackKey,JSON.stringify(record));return;}const db=await openDB();await new Promise<void>((resolve,reject)=>{const tx=db.transaction('notebooks','readwrite');tx.objectStore('notebooks').put(record,key);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);});localStorage.removeItem(fallbackKey);},
+  async write(record){if(fallback){localStorage.setItem(fallbackKey,JSON.stringify(record));return;}const db=await openDB();await new Promise<void>((resolve,reject)=>{const tx=db.transaction('notebooks','readwrite');tx.objectStore('notebooks').put(record,key);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);});try{localStorage.removeItem(fallbackKey);}catch{}},
   async lock<T>(fn:()=>Promise<T>):Promise<T>{if(navigator.locks)return navigator.locks.request('setlog-notebook:'+key,fn);const work=lockChain.catch(()=>{}).then(fn);lockChain=work;return work;}
  };
 }

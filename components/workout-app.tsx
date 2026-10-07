@@ -42,7 +42,7 @@ export default function WorkoutApp(){
    if(!stateRef.current)return;
    const previous=stateRef.current;const next=updater(previous);stateRef.current=next;setState(next);setSaveStatus('Saving…');setSaveError(false);
    const rev=++saveRevision.current;
-   saveChain.current=saveChain.current.catch(()=>{}).then(()=>saveState(next,previous)).then(()=>{channel.current?.postMessage(next);if(rev===saveRevision.current){setSaveStatus('Saved on this device');setSaveError(false);}}).catch(()=>{if(rev===saveRevision.current){setSaveStatus('Could not save');setSaveError(true);}});
+   saveChain.current=saveChain.current.catch(()=>{}).then(()=>saveState(next,previous)).then(saved=>{channel.current?.postMessage(saved);if(rev===saveRevision.current){if(saved!==next){stateRef.current=saved;setState(saved);}setSaveStatus('Saved on this device');setSaveError(false);}}).catch(()=>{if(rev===saveRevision.current){setSaveStatus('Could not save');setSaveError(true);}});
  },[]);
  useEffect(()=>{
   let active=true;
