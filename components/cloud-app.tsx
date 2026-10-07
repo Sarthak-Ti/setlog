@@ -6,16 +6,26 @@ import { configureStorage, currentSync } from '@/lib/storage';
 import WorkoutApp from './workout-app';
 export const AccountContext=createContext<{email:string|null;userId:string|null;onAccount:()=>void}>({email:null,userId:null,onAccount:()=>{}});
 export const useAccount=()=>useContext(AccountContext);
+type Identity={id:string;email:string|null};
+function savedIdentity():Identity|null{try{const value=JSON.parse(localStorage.getItem('setlog-last-account')??'null');return value&&typeof value.id==='string'?value:null;}catch{return null;}}
 export default function CloudApp({configurationError}:{configurationError:string}){
+ const [offlineAccount,setOfflineAccount]=useState<Identity|null>(()=>!navigator.onLine?savedIdentity():null);
  const [session,setSession]=useState<Session|null>(null),[ready,setReady]=useState(!supabase),[deviceOnly,setDeviceOnly]=useState(!supabase),[screen,setScreen]=useState(false),[recovery,setRecovery]=useState(false);
- useEffect(()=>{if(!supabase)return;let active=true;supabase.auth.getSession().then(({data})=>{if(active){setSession(data.session);setReady(true);}}).catch(()=>{if(active)setReady(true);});const {data:{subscription}}=supabase.auth.onAuthStateChange((_event,next)=>{if(active){if(_event==='PASSWORD_RECOVERY')setRecovery(true);setSession(next);setReady(true);if(next){setDeviceOnly(false);setScreen(false);}}});return()=>{active=false;subscription.unsubscribe();};},[]);
- const userId=session?.user.id??null;
+ useEffect(()=>{
+  if(!supabase)return;let active=true;
+  const remember=(next:Session|null)=>{if(!next)return;const identity={id:next.user.id,email:next.user.email??null};setOfflineAccount(identity);try{localStorage.setItem('setlog-last-account',JSON.stringify(identity));}catch{}};
+  if(!navigator.onLine&&savedIdentity())setReady(true);
+  supabase.auth.getSession().then(({data,error})=>{if(!active)return;setSession(data.session);remember(data.session);if(error&&!data.session)setOfflineAccount(savedIdentity());setReady(true);}).catch(()=>{if(active){setOfflineAccount(savedIdentity());setReady(true);}});
+  const {data:{subscription}}=supabase.auth.onAuthStateChange((event,next)=>{if(!active)return;if(event==='SIGNED_OUT'){setOfflineAccount(null);setDeviceOnly(false);try{localStorage.removeItem('setlog-last-account');}catch{}}if(event==='PASSWORD_RECOVERY')setRecovery(true);setSession(next);remember(next);setReady(true);if(next){setDeviceOnly(false);setScreen(false);}});
+  return()=>{active=false;subscription.unsubscribe();};
+ },[]);
+ const userId=session?.user.id??offlineAccount?.id??null;
  const [scope,setScope]=useState<string|null>(null);
  useEffect(()=>{if(!ready)return;configureStorage(userId);setScope(userId??'device');const sync=()=>void currentSync()?.sync();window.addEventListener('online',sync);const focus=()=>{if(document.visibilityState==='visible')sync();};document.addEventListener('visibilitychange',focus);const interval=setInterval(sync,60000);return()=>{window.removeEventListener('online',sync);document.removeEventListener('visibilitychange',focus);clearInterval(interval);currentSync()?.stop();};},[ready,userId]);
  if(!ready||scope!==(userId??'device'))return <div className="app-shell"><div className="empty-state">Opening Setlog…</div></div>;
  if(recovery)return <Recovery onDone={()=>setRecovery(false)}/>;
- if((!session&&!deviceOnly&&supabase)||screen)return <SignIn onBack={()=>{setDeviceOnly(true);setScreen(false);}}/>;
- return <AccountContext.Provider value={{email:session?.user.email??null,userId,onAccount:()=>setScreen(true)}}>{configurationError&&<p role="alert" className="mx-auto max-w-3xl p-4 text-sm">{configurationError}</p>}<WorkoutApp key={scope}/></AccountContext.Provider>;
+ if((!userId&&!deviceOnly&&supabase)||screen)return <SignIn onBack={()=>{setDeviceOnly(true);setScreen(false);}}/>;
+ return <AccountContext.Provider value={{email:session?.user.email??offlineAccount?.email??null,userId,onAccount:()=>setScreen(true)}}>{configurationError&&<p role="alert" className="mx-auto max-w-3xl p-4 text-sm">{configurationError}</p>}<WorkoutApp key={scope}/></AccountContext.Provider>;
 }
 function SignIn({onBack}:{onBack:()=>void}){
  const [email,setEmail]=useState(''),[password,setPassword]=useState(''),[mode,setMode]=useState<'signin'|'signup'>('signin'),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
