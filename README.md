@@ -16,6 +16,14 @@ Sync runs after edits, on reconnect, on returning to the app, and once a minute 
 
 The service worker and manifest are scoped to /setlog/. They do not control the existing academic website. Open online once and wait for Settings to say the offline app is ready. The timer catches up after locking your phone, but background chime/vibration is browser-dependent.
 
+## Workout logging
+
+Checking off a strength set carries its weight to the next unfinished set of that exercise, including over a previous-workout suggestion. A weight you explicitly edited in the current session is preserved. Reps and completed sets stay unchanged; unchecking a set does not carry its weight forward.
+
+After saving a strength workout, choose **Add cardio** or **Done**. Run and Zone 2 Elliptical support duration, optional distance in your selected unit, and optional average heart rate. Closing or cancelling this flow keeps the strength workout saved. Extra cardio is an ordinary history session and syncs, exports, and contributes to daily totals without advancing the queue again.
+
+The version 1 notebook format remains compatible with existing backups. Optional `weightEdited` set metadata preserves manual weight choices across reloads, and `afterWorkoutId` links extra cardio to the saved strength workout and prevents duplicate saves.
+
 ## Daily compilation
 
 A ChatGPT automation runs each morning around 8 a.m. America/New_York through the connected Supabase integration. It invokes public.compile_daily_workout_summary for the prior 14 calendar days, upserting one compact row per day to include late offline sync. Yesterday’s compilation appears in History and can be reported by the task. The automation requires the ChatGPT schedule and Supabase connection to remain enabled. Summaries are not full backups and do not guarantee that Supabase will never pause a free project or change its free plan.

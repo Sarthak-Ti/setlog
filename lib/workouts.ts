@@ -1,11 +1,12 @@
 import { z } from 'zod';
 const idS=z.string().min(1).max(100), nameS=z.string().trim().min(1).max(100), num=z.number().finite().min(0).max(10000).nullable();
 const exerciseS=z.object({id:idS,name:nameS,step:z.number().positive().max(100),perHand:z.boolean()});
-const setS=z.object({id:idS,weight:num,reps:z.number().int().min(1).max(1000).nullable(),completed:z.boolean()});
+const setS=z.object({id:idS,weight:num,reps:z.number().int().min(1).max(1000).nullable(),completed:z.boolean(),weightEdited:z.boolean().optional()});
 const entryS=z.object({id:idS,exerciseId:idS,name:nameS,step:z.number().positive().max(100),perHand:z.boolean(),sets:z.array(setS).max(100)});
 const templateS=z.object({id:idS,name:nameS,kind:z.enum(['strength','cardio','rest']),focus:z.string().max(200),exercises:z.array(z.object({exerciseId:idS,sets:z.number().int().min(1).max(100),optional:z.boolean()})).max(100)});
 const queueS=z.object({id:idS,templateId:idS,cycle:z.number().int().positive()});
-const sessionS=z.object({id:idS,queueId:idS.nullable(),templateId:idS,name:nameS,kind:z.enum(['strength','cardio','rest']),cycle:z.number().int().positive(),startedAt:z.string().datetime().nullable(),completedAt:z.string().datetime().nullable(),entries:z.array(entryS).max(100),cardio:z.object({activity:z.enum(['Run','Zone 2 Elliptical']),duration:num,heartRate:z.number().int().min(1).max(300).nullable(),distance:num,unit:z.enum(['mi','km'])}),notes:z.string().max(5000)});
+const cardioS=z.object({activity:z.enum(['Run','Zone 2 Elliptical']),duration:num,heartRate:z.number().int().min(1).max(300).nullable(),distance:num,unit:z.enum(['mi','km'])});
+const sessionS=z.object({id:idS,queueId:idS.nullable(),templateId:idS,name:nameS,kind:z.enum(['strength','cardio','rest']),cycle:z.number().int().positive(),startedAt:z.string().datetime().nullable(),completedAt:z.string().datetime().nullable(),entries:z.array(entryS).max(100),cardio:cardioS,afterWorkoutId:idS.optional(),notes:z.string().max(5000)});
 export const stateSchema=z.object({version:z.literal(1),library:z.array(exerciseS).min(1).max(5000),templates:z.array(templateS).min(1).max(100),defaultOrder:z.array(idS).min(1).max(100),queue:z.array(queueS).max(100),cycle:z.number().int().positive(),draft:sessionS.nullable(),history:z.array(sessionS).max(50000),settings:z.object({restSeconds:z.number().int().min(15).max(3600),autoTimer:z.boolean(),sound:z.boolean(),vibration:z.boolean(),distanceUnit:z.enum(['mi','km'])}),timer:z.object({endsAt:z.number().finite().nullable(),duration:z.number().min(0).max(86400),pausedRemaining:z.number().min(0).max(86400).nullable()})});
 export type AppState=z.infer<typeof stateSchema>;
 export type Exercise=z.infer<typeof exerciseS>;
@@ -45,6 +46,14 @@ export function resizeSets(entry:Entry,count:number):Entry{
  if(count<=entry.sets.length)return {...entry,sets:entry.sets.slice(0,count)};
  const last=entry.sets.at(-1);
  return {...entry,sets:[...entry.sets,...Array.from({length:count-entry.sets.length},()=>({id:uid(),weight:last?.weight??null,reps:last?.reps??8,completed:false}))]};
+}
+/** Carry suggestions forward, preserving weights explicitly entered this session. */
+export function toggleCompletedSet(entry:Entry,setId:string):Entry{
+ const at=entry.sets.findIndex(s=>s.id===setId);if(at<0)return entry;
+ const current=entry.sets[at];
+ if(!current.completed&&(current.weight===null||current.reps===null))throw new Error('Enter a weight and reps first. Use 0 lbs for unweighted sets.');
+ const next=current.completed?-1:entry.sets.findIndex((s,i)=>i>at&&!s.completed);
+ return {...entry,sets:entry.sets.map((s,i)=>i===at?{...s,completed:!s.completed}:i===next&&!s.weightEdited?{...s,weight:current.weight}:s)};
 }
 export function addQueueSession(queue:QueueItem[],templateId:string,cycle:number,afterIndex=queue.length-1):QueueItem[]{
  if(queue.length>=100)throw new Error('A cycle can contain up to 100 sessions.');
@@ -88,6 +97,18 @@ export function takeExtraRest(state:AppState):AppState{
  if(state.history.some(s=>s.queueId===null&&s.kind==='rest'&&s.completedAt&&day(s.completedAt)===day(now)))return state;
  const s:Session={id:uid(),queueId:null,templateId:'rest',name:'Extra rest',kind:'rest',cycle:state.cycle,startedAt:now,completedAt:now,entries:[],cardio:{activity:'Run',duration:null,heartRate:null,distance:null,unit:state.settings.distanceUnit},notes:'Queue paused'};
  return {...state,history:[s,...state.history]};
+}
+/** An ordinary cardio history record: no queue, draft, or timer changes. */
+export function addPostWorkoutCardio(state:AppState,workoutId:string,input:Session['cardio'],now=new Date().toISOString()):AppState{
+ const parent=state.history.find(s=>s.id===workoutId&&s.kind==='strength'&&s.completedAt);
+ if(!parent)throw new Error('Save your strength workout first.');
+ if(state.history.some(s=>s.afterWorkoutId===workoutId&&s.kind==='cardio'))return state;
+ const result=cardioS.safeParse(input);
+ if(!result.success)throw new Error('Check your cardio values: distance must be 0–10,000 and heart rate a whole number from 1–300.');
+ const cardio=result.data;
+ if(cardio.duration===null||cardio.duration<=0)throw new Error('Enter a duration greater than 0 minutes (up to 10,000).');
+ const session:Session={id:uid(),queueId:null,templateId:state.templates.find(t=>t.kind==='cardio')?.id??parent.templateId,name:`${parent.name.slice(0,88)} · cardio`,kind:'cardio',cycle:parent.cycle,startedAt:now,completedAt:now,entries:[],cardio,afterWorkoutId:parent.id,notes:''};
+ return {...state,history:[session,...state.history]};
 }
 export function parseState(value:unknown):AppState{
  const state=stateSchema.parse(value),libIds=new Set(state.library.map(e=>e.id)),templateIds=new Set(state.templates.map(t=>t.id));

@@ -9,8 +9,9 @@ export async function initializeCloud(){
  supabase=createClient(config.url,config.publishableKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,storageKey:'setlog-auth-v2',flowType:'implicit'},global:{fetch:(input,init)=>fetch(input,{...init,signal:init?.signal??AbortSignal.timeout(15000)})}});
 }
 export function cloudStore(userId:string):CloudStore{
+ const requireSession=async()=>{const {data,error}=await supabase!.auth.getSession();if(error)throw error;if(!data.session||data.session.user.id!==userId)throw new Error('Sign in again to sync this notebook.');};
  return {
-  async read(){const {data,error}=await supabase!.from('notebooks').select('state,revision').eq('user_id',userId).maybeSingle();if(error)throw error;return data?{state:parseState(data.state),revision:data.revision}:null;},
-  async write(state:AppState,revision:number){const {data,error}=await supabase!.rpc('save_notebook',{p_state:state,p_expected_revision:revision});if(error)throw error;return {state:parseState(data.state),revision:data.revision};}
+  async read(){await requireSession();const {data,error}=await supabase!.from('notebooks').select('state,revision').eq('user_id',userId).maybeSingle();if(error)throw error;return data?{state:parseState(data.state),revision:data.revision}:null;},
+  async write(state:AppState,revision:number){await requireSession();const {data,error}=await supabase!.rpc('save_notebook',{p_state:state,p_expected_revision:revision});if(error)throw error;return {state:parseState(data.state),revision:data.revision};}
  };
 }
