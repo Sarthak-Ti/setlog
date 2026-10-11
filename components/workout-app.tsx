@@ -17,7 +17,7 @@ import PostWorkoutCardio from './post-workout-cardio';
 import QueueList from './queue-list';
 import WorkoutPreview from './workout-preview';
 import WorkoutPicker from './workout-picker';
-import { loadState, saveState, storageScope } from '@/lib/storage';
+import { loadState, currentSync, storageScope } from '@/lib/storage';
 import CloudPanel, { DailySummary, useSyncStatus } from './cloud-panel';
 import { type AppState, type Session, type Entry, type QueueItem, type Exercise, type WorkoutSet, type Template, uid, chooseWorkout, viewWorkout, makeDraft, makeEntry, move, resizeSets, applyCycleEdits, appendWorkout, removeQueueWorkout, createWorkoutTemplate, toggleCompletedSet, addPostWorkoutCardio, finishWorkout, takeExtraRest, parseBackup, backupJSON, historyCSV, fuzzyMatch, setCount, volume } from '@/lib/workouts';
 
@@ -32,6 +32,7 @@ export default function WorkoutApp(){
  const cloudStatus=useSyncStatus();
  const [state,setState]=useState<AppState|null>(null),stateRef=useRef<AppState|null>(null);
  const [loadError,setLoadError]=useState(''),[saveStatus,setSaveStatus]=useState('Saved on this device'),[saveError,setSaveError]=useState(false),[fallback,setFallback]=useState(false);
+ const notebook=useRef(currentSync());
  const saveChain=useRef(Promise.resolve()),saveRevision=useRef(0),channel=useRef<BroadcastChannel|null>(null);
  const [cardioWorkout,setCardioWorkout]=useState<Session|null>(null);
  const [viewQueueId,setViewQueueId]=useState<string|null>(null);
@@ -41,10 +42,11 @@ export default function WorkoutApp(){
  const [online,setOnline]=useState(true),[offlineReady,setOfflineReady]=useState(false),[now,setNow]=useState(Date.now()),[restDone,setRestDone]=useState(false),[installPrompt,setInstallPrompt]=useState<any>(null),[persistent,setPersistent]=useState(false);
  const audioRef=useRef<AudioContext|null>(null),fired=useRef<number|null>(null),dragIndex=useRef(-1),fileInput=useRef<HTMLInputElement|null>(null);
  const commit=useCallback((updater:(s:AppState)=>AppState)=>{
-   if(!stateRef.current)return;
+   if(!stateRef.current||!notebook.current)return;
    const previous=stateRef.current;const next=updater(previous);stateRef.current=next;setState(next);setSaveStatus('Saving…');setSaveError(false);
    const rev=++saveRevision.current;
-   const saving=saveChain.current.catch(()=>{}).then(()=>saveState(next,previous)).then(saved=>{channel.current?.postMessage(saved);if(rev===saveRevision.current){if(saved!==next){stateRef.current=saved;setState(saved);}setSaveStatus('Saved on this device');setSaveError(false);}});
+   // Keep pending writes bound to this mounted account, even after sign-out.
+   const saving=saveChain.current.catch(()=>{}).then(()=>notebook.current!.save(next,previous)).then(saved=>{channel.current?.postMessage(saved);if(rev===saveRevision.current){if(saved!==next){stateRef.current=saved;setState(saved);}setSaveStatus('Saved on this device');setSaveError(false);}});
    saveChain.current=saving.catch(()=>{if(rev===saveRevision.current){setSaveStatus('Could not save');setSaveError(true);}});
    return saving;
  },[]);
@@ -60,7 +62,7 @@ export default function WorkoutApp(){
    navigator.serviceWorker.register(import.meta.env.BASE_URL+'sw.js',{scope:import.meta.env.BASE_URL}).then(()=>navigator.serviceWorker.ready).then(()=>setOfflineReady(true)).catch(()=>setOfflineReady(false));
   }
   const tick=setInterval(()=>setNow(Date.now()),1000);
-  return()=>{active=false;window.removeEventListener('setlog-cloud-state',applyCloud);channel.current?.close();window.removeEventListener('online',conn);window.removeEventListener('offline',conn);window.removeEventListener('beforeinstallprompt',install);clearInterval(tick);};
+  return()=>{active=false;window.removeEventListener('setlog-cloud-state',applyCloud);channel.current?.close();channel.current=null;window.removeEventListener('online',conn);window.removeEventListener('offline',conn);window.removeEventListener('beforeinstallprompt',install);clearInterval(tick);};
  },[]);
  useEffect(()=>{const handler=(e:BeforeUnloadEvent)=>{if(saveError||saveStatus==='Saving…'){e.preventDefault();e.returnValue='';}};window.addEventListener('beforeunload',handler);return()=>window.removeEventListener('beforeunload',handler);},[saveStatus,saveError]);
  const enableAudio=()=>{try{const C=window.AudioContext||(window as any).webkitAudioContext;if(C){audioRef.current??=new C();audioRef.current?.resume();}}catch{}};

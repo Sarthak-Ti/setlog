@@ -15,3 +15,29 @@ test('network failure preserves local changes and reports unsynced status',async
 test('edits during an upload remain local and upload on the next pass',async()=>{const record=localRecord(),local=localStore(record),cloud=cloudStore({state:record.state,revision:1});let release:()=>void=()=>{},started:()=>void=()=>{};const gate=new Promise<void>(r=>release=r),begun=new Promise<void>(r=>started=r);let hold=true;const remote:CloudStore={read:cloud.read,write:async(s,r)=>{if(hold){started();await gate;}return cloud.write(s,r);}};const sync=new NotebookSync(local,remote);const first=takeExtraRest(record.state);await sync.save(first,record.state);const pending=sync.sync();await begun;const second={...first,settings:{...first.settings,sound:true}};await sync.save(second,first);hold=false;release();await pending;assert.equal((await local.read())!.state.settings.sound,true);assert.equal((await local.read())!.dirty,true);await sync.sync();assert.equal((await cloud.read())!.state.settings.sound,true);assert.equal((await local.read())!.dirty,false);sync.stop();});
 test('conflicts never write over the remote notebook',async()=>{const record=localRecord(),local=localStore(record);const remote=appendWorkout(record.state,'push-b'),cloud=cloudStore({state:remote,revision:2});const sync=new NotebookSync(local,cloud);await sync.save(appendWorkout(record.state,'leg-b'),record.state);await sync.sync();assert.equal(sync.status.phase,'conflict');assert.deepEqual((await cloud.read())!.state,remote);assert.equal((await local.read())!.dirty,true);await sync.resolve('cloud');assert.deepEqual((await local.read())!.state,remote);sync.stop();});
 test('stale CAS reads retry against the newest cloud revision',async()=>{const record=localRecord(),local=localStore(record);let latest:CloudRecord={state:record.state,revision:1},raced=false;const cloud:CloudStore={read:async()=>clone(latest),write:async(state,revision)=>{if(!raced){raced=true;latest={state:{...latest.state,settings:{...latest.state.settings,sound:true}},revision:2};throw Object.assign(Error('Conflict'),{code:'PT409'});}assert.equal(revision,2);latest={state,revision:3};return clone(latest);}};const sync=new NotebookSync(local,cloud);await sync.save(takeExtraRest(record.state),record.state);await sync.sync();assert.equal(latest.state.history.length,1);assert.equal(latest.state.settings.sound,true);assert.equal(sync.status.phase,'synced');sync.stop();});
+
+test('stopped account saves retain merged edits without notifying the next account',async()=>{
+ const record=localRecord(),concurrent={...record.state,settings:{...record.state.settings,sound:true}};
+ const local=localStore({...record,state:concurrent}),notifications:unknown[]=[];
+ const sync=new NotebookSync(local,null,state=>notifications.push(state));
+ let release:()=>void=()=>{};
+ const gate=new Promise<void>(resolve=>release=resolve);
+ const held=local.lock(()=>gate);
+ const edited=takeExtraRest(record.state),pending=sync.save(edited,record.state);
+ sync.stop();release();await held;await pending;
+ const saved=(await local.read())!;
+ assert.equal(saved.state.history.length,1);assert.equal(saved.state.settings.sound,true);
+ assert.equal(saved.dirty,true);assert.deepEqual(notifications,[]);
+});
+
+test('signing out during conflict resolution cannot apply old account state',async()=>{
+ const record=localRecord(),local=localStore(record),remote=appendWorkout(record.state,'push-b');
+ let release:()=>void=()=>{},hold=false;
+ const gate=new Promise<void>(resolve=>release=resolve),cloud=cloudStore({state:remote,revision:2});
+ const notifications:unknown[]=[];
+ const sync=new NotebookSync(local,{...cloud,read:async()=>{if(hold)await gate;return cloud.read();}},state=>notifications.push(state));
+ await sync.save(appendWorkout(record.state,'leg-b'),record.state);await sync.sync();assert.equal(sync.status.phase,'conflict');
+ const before=await local.read();notifications.length=0;hold=true;
+ const resolving=sync.resolve('cloud');sync.stop();release();await resolving;
+ assert.deepEqual(await local.read(),before);assert.deepEqual(notifications,[]);
+});
