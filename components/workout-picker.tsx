@@ -16,7 +16,7 @@ export default function WorkoutPicker({open,onOpenChange,state,onAdd,onCreate}:{
  const choices:Choice[]=rankedWorkouts(state.templates,query).map(t=>({id:t.id,name:t.name,kind:t.kind,focus:t.focus}));
  const clean=query.trim().replace(/\s+/g,' ');
  if(clean&&!state.templates.some(t=>t.name.trim().toLowerCase()===clean.toLowerCase()))choices.push({id:'__create',name:`Add workout “${clean.slice(0,100)}”`,kind:'create',focus:'Choose exercises and save a new workout'});
- const exercises=state.library.filter(e=>fuzzyMatch(e.name,exerciseQuery));
+ const exercises=state.library.filter(e=>!e.mergedInto&&fuzzyMatch(e.name,exerciseQuery));
  const choose=(choice:Choice)=>{
   if(choice.id==='__create'){if(state.templates.length>=100){toast.error('Your library can contain up to 100 workouts.');return;}setName(clean.slice(0,100));setPhase('create');return;}
   if(onAdd(choice.id))onOpenChange(false);

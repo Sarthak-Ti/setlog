@@ -20,9 +20,15 @@ The service worker and manifest are scoped to /setlog/. They do not control the 
 
 Checking off a strength set carries its weight to the next unfinished set of that exercise, including over a previous-workout suggestion. A weight you explicitly edited in the current session is preserved. Reps and completed sets stay unchanged; unchecking a set does not carry its weight forward.
 
-After saving a strength workout, choose **Add cardio** or **Done**. Run and Zone 2 Elliptical support duration, optional distance in your selected unit, and optional average heart rate. Closing or cancelling this flow keeps the strength workout saved. Extra cardio is an ordinary history session and syncs, exports, and contributes to daily totals without advancing the queue again.
+Before finishing a strength workout, use **Add cardio** below the exercises. Its fields save with the unfinished workout across reloads. **Finish workout** saves strength and cardio together. Run and Zone 2 Elliptical support duration, optional distance in your selected unit, and optional average heart rate. Extra cardio is a linked history session and syncs, exports, and contributes to daily totals without advancing the queue again.
 
-The version 1 notebook format remains compatible with existing backups. Optional `weightEdited` set metadata preserves manual weight choices across reloads, and `afterWorkoutId` links extra cardio to the saved strength workout and prevents duplicate saves.
+Use **Open previous workout**, any History row, or an exercise's session list to edit saved sets, notes, or cardio. Changes keep the original date and leave today's workout and queue in place. If another device changes the same session while the editor is open, reopen it before saving.
+
+The **Exercises** tab lists all saved exercises, their completed sets, and charts for heaviest set, volume, and reps. Volume uses logged weight × reps without doubling per-hand weights. Duplicate entries with the same weight convention can be merged after downloading a backup. Original session names and values are preserved; aliases combine their histories and keep older offline records usable.
+
+On **Queue → Overall plan · from Day 1**, expand any day to edit its exercises, set counts, optional exercises, or workout type, and open its previous session. Days can be added, removed, or reordered. Each occurrence can have its own exercises, even when the same routine repeats. Saving preserves the current queue order and workouts in progress; future sessions use the saved day settings. **Restart from day N** downloads a backup and starts a new cycle from that day, replacing the unfinished workout and remaining queue while retaining completed history. After the last day, the full plan repeats from Day 1.
+
+The version 1 notebook format accepts existing backups. Optional `weightEdited` set metadata preserves manual weight choices, `extraCardio` keeps unfinished additional cardio, `afterWorkoutId` links completed cardio, `planDays`/`planDayId` identify plan occurrences, and `mergedInto` retains exercise aliases. All new screens are precached for offline use. Close and reopen existing installations online to receive the latest version before using the new features.
 
 ## Daily compilation
 

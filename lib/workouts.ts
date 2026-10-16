@@ -1,13 +1,14 @@
 import { z } from 'zod';
 const idS=z.string().min(1).max(100), nameS=z.string().trim().min(1).max(100), num=z.number().finite().min(0).max(10000).nullable();
-const exerciseS=z.object({id:idS,name:nameS,step:z.number().positive().max(100),perHand:z.boolean()});
+const exerciseS=z.object({id:idS,name:nameS,step:z.number().positive().max(100),perHand:z.boolean(),mergedInto:idS.optional()});
 const setS=z.object({id:idS,weight:num,reps:z.number().int().min(1).max(1000).nullable(),completed:z.boolean(),weightEdited:z.boolean().optional()});
 const entryS=z.object({id:idS,exerciseId:idS,name:nameS,step:z.number().positive().max(100),perHand:z.boolean(),sets:z.array(setS).max(100)});
 const templateS=z.object({id:idS,name:nameS,kind:z.enum(['strength','cardio','rest']),focus:z.string().max(200),exercises:z.array(z.object({exerciseId:idS,sets:z.number().int().min(1).max(100),optional:z.boolean()})).max(100)});
-const queueS=z.object({id:idS,templateId:idS,cycle:z.number().int().positive()});
+const planDayS=z.object({id:idS,templateId:idS,exercises:templateS.shape.exercises});
+const queueS=z.object({id:idS,templateId:idS,cycle:z.number().int().positive(),planDayId:idS.optional()});
 const cardioS=z.object({activity:z.enum(['Run','Zone 2 Elliptical']),duration:num,heartRate:z.number().int().min(1).max(300).nullable(),distance:num,unit:z.enum(['mi','km'])});
-const sessionS=z.object({id:idS,queueId:idS.nullable(),templateId:idS,name:nameS,kind:z.enum(['strength','cardio','rest']),cycle:z.number().int().positive(),startedAt:z.string().datetime().nullable(),completedAt:z.string().datetime().nullable(),entries:z.array(entryS).max(100),cardio:cardioS,afterWorkoutId:idS.optional(),notes:z.string().max(5000)});
-export const stateSchema=z.object({version:z.literal(1),library:z.array(exerciseS).min(1).max(5000),templates:z.array(templateS).min(1).max(100),defaultOrder:z.array(idS).min(1).max(100),queue:z.array(queueS).max(100),cycle:z.number().int().positive(),draft:sessionS.nullable(),history:z.array(sessionS).max(50000),settings:z.object({restSeconds:z.number().int().min(15).max(3600),autoTimer:z.boolean(),sound:z.boolean(),vibration:z.boolean(),distanceUnit:z.enum(['mi','km'])}),timer:z.object({endsAt:z.number().finite().nullable(),duration:z.number().min(0).max(86400),pausedRemaining:z.number().min(0).max(86400).nullable()})});
+const sessionS=z.object({id:idS,queueId:idS.nullable(),templateId:idS,name:nameS,kind:z.enum(['strength','cardio','rest']),cycle:z.number().int().positive(),startedAt:z.string().datetime().nullable(),completedAt:z.string().datetime().nullable(),entries:z.array(entryS).max(100),cardio:cardioS,extraCardio:cardioS.optional(),afterWorkoutId:idS.optional(),planDayId:idS.optional(),notes:z.string().max(5000)});
+export const stateSchema=z.object({version:z.literal(1),library:z.array(exerciseS).min(1).max(5000),templates:z.array(templateS).min(1).max(100),defaultOrder:z.array(idS).min(1).max(100),planDays:z.array(planDayS).min(1).max(100).optional(),queue:z.array(queueS).max(100),cycle:z.number().int().positive(),draft:sessionS.nullable(),history:z.array(sessionS).max(50000),settings:z.object({restSeconds:z.number().int().min(15).max(3600),autoTimer:z.boolean(),sound:z.boolean(),vibration:z.boolean(),distanceUnit:z.enum(['mi','km'])}),timer:z.object({endsAt:z.number().finite().nullable(),duration:z.number().min(0).max(86400),pausedRemaining:z.number().min(0).max(86400).nullable()})});
 export type AppState=z.infer<typeof stateSchema>;
 export type Exercise=z.infer<typeof exerciseS>;
 export type Entry=z.infer<typeof entryS>;
@@ -15,7 +16,80 @@ export type WorkoutSet=z.infer<typeof setS>;
 export type Template=z.infer<typeof templateS>;
 export type QueueItem=z.infer<typeof queueS>;
 export type Session=z.infer<typeof sessionS>;
+export type PlanDay=z.infer<typeof planDayS>;
 export const uid=()=>crypto.randomUUID();
+export function canonicalExerciseId(state:Pick<AppState,'library'>,id:string):string{
+ const seen=new Set<string>();let current=id;
+ while(true){if(seen.has(current))throw new Error('Exercise aliases contain a loop.');seen.add(current);const exercise=state.library.find(e=>e.id===current);if(!exercise)throw new Error('An exercise is missing from the library.');if(!exercise.mergedInto)return current;current=exercise.mergedInto;}
+}
+export const activeExercises=(state:AppState)=>state.library.filter(e=>!e.mergedInto);
+export function overallPlan(state:AppState):PlanDay[]{return state.planDays??state.defaultOrder.map((templateId,i)=>({id:`plan-${i+1}`,templateId,exercises:state.templates.find(t=>t.id===templateId)!.exercises}));}
+export function queuePlanDay(state:AppState,item:QueueItem):PlanDay|undefined{
+ const days=overallPlan(state);if(item.planDayId)return days.find(d=>d.id===item.planDayId&&d.templateId===item.templateId);
+ const matches=days.filter(d=>d.templateId===item.templateId);return matches.length===1?matches[0]:undefined;
+}
+export function validateCardio(input:Session['cardio']):Session['cardio']{
+ const result=cardioS.safeParse(input);
+ if(!result.success)throw new Error('Check your cardio values: duration and distance must be at most 10,000, and heart rate a whole number from 1–300.');
+ if(result.data.duration===null||result.data.duration<=0)throw new Error('Enter a duration greater than 0 minutes (up to 10,000).');
+ return result.data;
+}
+export function saveOverallPlan(state:AppState,input:PlanDay[]):AppState{
+ const days=z.array(planDayS).min(1).max(100).parse(input);
+ if(days.some(d=>state.templates.find(t=>t.id===d.templateId)?.kind==='strength'&&!d.exercises.some(e=>!e.optional)))throw new Error('Every strength day needs at least one non-optional exercise.');
+ const next=parseState({...state,planDays:days,defaultOrder:days.map(d=>d.templateId)});
+ // An active session is a snapshot; only unstarted sessions take plan edits.
+ if(next.draft&&!next.draft.startedAt&&!next.draft.entries.some(e=>e.sets.some(s=>s.completed))){
+  const item=next.queue.find(q=>q.id===next.draft!.queueId);if(item)next.draft=makeDraft(next,item);
+ }
+ return next;
+}
+export function saveDraftRoutine(state:AppState):AppState{
+ const draft=state.draft;if(!draft||draft.kind!=='strength')throw new Error('Open a strength workout first.');
+ const template=state.templates.find(t=>t.id===draft.templateId)!;
+ const day=state.queue.find(q=>q.id===draft.queueId),planDay=day?queuePlanDay(state,day):undefined;
+ const exercises=[...draft.entries.map(e=>({exerciseId:canonicalExerciseId(state,e.exerciseId),sets:e.sets.length,optional:false})),...(planDay?.exercises??template.exercises).filter(e=>e.optional&&!draft.entries.some(a=>canonicalExerciseId(state,a.exerciseId)===canonicalExerciseId(state,e.exerciseId)))];
+ return {...state,templates:state.templates.map(t=>t.id===template.id?{...t,exercises}:t),...(state.planDays?{planDays:state.planDays.map(d=>d.id===planDay?.id?{...d,exercises}:d)}:{})};
+}
+export function restartPlan(state:AppState,dayId:string):AppState{
+ const days=overallPlan(state),at=days.findIndex(d=>d.id===dayId);if(at<0)throw new Error('Choose a day in your plan.');
+ const cycle=state.cycle+1,queue=days.slice(at).map(d=>({id:uid(),templateId:d.templateId,planDayId:d.id,cycle}));
+ const next={...state,cycle,queue,draft:null,timer:{...state.timer,endsAt:null,pausedRemaining:null}} as AppState;
+ next.draft=makeDraft(next,queue[0]);return next;
+}
+export function mergeExercises(state:AppState,sourceId:string,targetId:string):AppState{
+ const source=state.library.find(e=>e.id===sourceId),target=state.library.find(e=>e.id===targetId);
+ if(!source||!target||source.mergedInto||target.mergedInto||sourceId===targetId)throw new Error('Choose two different exercises.');
+ if(source.perHand!==target.perHand)throw new Error('These exercises use different weight conventions. Keep them separate until you have checked their logs.');
+ // Retain the source ID as an alias so old/offline history stays intact.
+ const remap=(exercises:Template['exercises'])=>exercises.map(e=>({...e,exerciseId:canonicalExerciseId(next,e.exerciseId)})).reduce<Template['exercises']>((all,e)=>{const existing=all.find(x=>x.exerciseId===e.exerciseId);if(existing){existing.sets=Math.min(100,existing.sets+e.sets);existing.optional=existing.optional&&e.optional;}else all.push({...e});return all;},[]);
+ const next={...state,library:state.library.map(e=>e.id===sourceId?{...e,mergedInto:targetId}:e)};
+ return {...next,templates:next.templates.map(t=>({...t,exercises:remap(t.exercises)})),...(next.planDays?{planDays:next.planDays.map(d=>({...d,exercises:remap(d.exercises)}))}:{})};
+}
+export function exerciseHistory(state:AppState,exerciseId:string){
+ const canonical=canonicalExerciseId(state,exerciseId);
+ return state.history.filter(s=>s.kind==='strength').flatMap(session=>{
+  const entries=session.entries.filter(e=>canonicalExerciseId(state,e.exerciseId)===canonical);
+  const sets=entries.flatMap(e=>e.sets.filter(s=>s.completed));if(!sets.length)return [];
+  return [{session,entries,sets,weight:Math.max(...sets.map(s=>s.weight??0)),reps:sets.reduce((n,s)=>n+(s.reps??0),0),volume:sets.reduce((n,s)=>n+(s.weight??0)*(s.reps??0),0)}];
+ }).sort((a,b)=>b.session.completedAt!.localeCompare(a.session.completedAt!));
+}
+export function updateSavedSession(state:AppState,original:Session,edited:Session,extra?:Session['cardio']|null,originalExtra?:Session):AppState{
+ const current=state.history.find(s=>s.id===original.id);
+ const same=(a:Session|undefined,b:Session|undefined)=>JSON.stringify(a&&sessionS.parse(a))===JSON.stringify(b&&sessionS.parse(b));
+ if(!current||!same(current,original))throw new Error('This workout changed elsewhere. Close it and reopen the latest version before editing.');
+ const saved=sessionS.parse({...current,entries:edited.entries,cardio:edited.cardio,notes:edited.notes});
+ if(saved.kind==='strength'&&!setCount(saved))throw new Error('Keep at least one completed set in a saved workout.');
+ if(saved.kind==='cardio')saved.cardio=validateCardio(saved.cardio);
+ let next={...state,history:state.history.map(s=>s.id===saved.id?saved:s)};
+ if(saved.kind==='strength'&&extra!==undefined){
+  const existing=state.history.find(s=>s.kind==='cardio'&&s.afterWorkoutId===saved.id);
+  if(!same(existing,originalExtra))throw new Error('This workout’s cardio changed elsewhere. Close and reopen it before editing.');
+  if(extra){const cardio=validateCardio(extra);next=existing?{...next,history:next.history.map(s=>s.id===existing.id?{...s,cardio}:s)}:addPostWorkoutCardio(next,saved.id,cardio,saved.completedAt!);}
+  else if(existing)next={...next,history:next.history.filter(s=>s.id!==existing.id)};
+ }
+ return parseState(next);
+}
 export function initialState():AppState{
  const names=['Incline DB Press','Chest Fly','Side Lateral Fly','Overhead DB Triceps','Zercher Squat','Leg Curl','Leg Extension','Calves','Cable Row','Cable Lat Pulldown','Incline DB Curl','Forearms','Overhead Shoulder Press','Flat DB Press','Cable Triceps Pushdown','RDL','Leg Press (wide / glute)','Face Pull','Rear Delt Fly','Zottman Curl'];
  const library:Exercise[]=names.map((name,i)=>({id:`ex-${i+1}`,name,step:5,perHand:['Incline DB Press','Side Lateral Fly','Incline DB Curl','Overhead Shoulder Press','Flat DB Press','Rear Delt Fly','Zottman Curl'].includes(name)}));
@@ -34,9 +108,11 @@ export function initialState():AppState{
  state.draft=makeDraft(state,state.queue[0]);return state;
 }
 export function lastEntry(state:AppState,exerciseId:string,templateId:string):{entry:Entry;session:Session}|null{
- const find=(same:boolean)=>{for(const session of state.history){if(same&&session.templateId!==templateId)continue;const entry=session.entries.find(e=>e.exerciseId===exerciseId&&e.sets.some(s=>s.completed));if(entry)return {entry,session};}return null;};return find(true)??find(false);
+ const canonical=canonicalExerciseId(state,exerciseId);
+ const find=(same:boolean)=>{for(const session of state.history){if(same&&session.templateId!==templateId)continue;const entry=session.entries.find(e=>canonicalExerciseId(state,e.exerciseId)===canonical&&e.sets.some(s=>s.completed));if(entry)return {entry,session};}return null;};return find(true)??find(false);
 }
 export function makeEntry(state:AppState,exerciseId:string,templateId:string,count?:number):Entry{
+ exerciseId=canonicalExerciseId(state,exerciseId);
  const ex=state.library.find(e=>e.id===exerciseId)!;const previous=lastEntry(state,exerciseId,templateId)?.entry.sets.filter(s=>s.completed);
  const target=count??previous?.length??3;
  return {id:uid(),exerciseId,name:ex.name,step:ex.step,perHand:ex.perHand,sets:Array.from({length:target},(_,i)=>{const last=previous?.[i]??previous?.at(-1);return {id:uid(),weight:last?.weight??null,reps:last?.reps??8,completed:false};})};
@@ -70,7 +146,8 @@ export function applyCycleEdits(state:AppState,queue:QueueItem[]):AppState{
 }
 export function makeDraft(state:AppState,item:QueueItem):Session{
  const t=state.templates.find(t=>t.id===item.templateId)!;
- return {id:uid(),queueId:item.id,templateId:t.id,name:t.name,kind:t.kind,cycle:item.cycle,startedAt:null,completedAt:null,entries:t.exercises.filter(e=>!e.optional).map(e=>makeEntry(state,e.exerciseId,t.id,e.sets)),cardio:{activity:'Run',duration:null,heartRate:null,distance:null,unit:state.settings.distanceUnit},notes:''};
+ const day=queuePlanDay(state,item),exercises=day?.exercises??t.exercises;
+ return {id:uid(),queueId:item.id,templateId:t.id,name:t.name,kind:t.kind,cycle:item.cycle,...(day?{planDayId:day.id}:{}),startedAt:null,completedAt:null,entries:exercises.filter(e=>!e.optional).map(e=>makeEntry(state,e.exerciseId,t.id,e.sets)),cardio:{activity:'Run',duration:null,heartRate:null,distance:null,unit:state.settings.distanceUnit},notes:''};
 }
 export function move<T>(items:T[],from:number,to:number):T[]{if(from<0||to<0||from>=items.length||to>=items.length)return items;const next=[...items];const [item]=next.splice(from,1);next.splice(to,0,item);return next;}
 /** Viewing a queued day never changes the current session or cycle. */
@@ -89,8 +166,12 @@ export function finishWorkout(state:AppState,now=new Date().toISOString()):AppSt
  if(draft.kind==='cardio'&&!(draft.cardio.duration&&draft.cardio.duration>0))throw new Error('Add your cardio duration first.');
  for(const e of draft.entries)for(const s of e.sets)if(s.completed&&(s.weight===null||s.reps===null||s.reps<1))throw new Error('Completed sets need a weight and reps. Use 0 lbs for unweighted sets.');
  let queue=state.queue.filter(q=>q.id!==draft.queueId),cycle=state.cycle;
- if(!queue.length){cycle++;queue=state.defaultOrder.map(templateId=>({id:uid(),templateId,cycle}));}
- const next:AppState={...state,queue,cycle,history:[{...draft,startedAt:draft.startedAt??now,completedAt:now},...state.history],timer:{...state.timer,endsAt:null,pausedRemaining:null},draft:null};next.draft=makeDraft(next,queue[0]);return next;
+ if(draft.extraCardio)validateCardio(draft.extraCardio);
+ if(!queue.length){cycle++;queue=overallPlan(state).map(day=>({id:uid(),templateId:day.templateId,planDayId:day.id,cycle}));}
+ const {extraCardio,...saved}=draft;
+ let next:AppState={...state,queue,cycle,history:[{...saved,startedAt:draft.startedAt??now,completedAt:now},...state.history],timer:{...state.timer,endsAt:null,pausedRemaining:null},draft:null};
+ if(draft.kind==='strength'&&extraCardio)next=addPostWorkoutCardio(next,draft.id,extraCardio,now);
+ next.draft=makeDraft(next,queue[0]);return next;
 }
 export function takeExtraRest(state:AppState):AppState{
  const now=new Date().toISOString(),day=(iso:string)=>new Date(iso).toLocaleDateString();
@@ -103,17 +184,16 @@ export function addPostWorkoutCardio(state:AppState,workoutId:string,input:Sessi
  const parent=state.history.find(s=>s.id===workoutId&&s.kind==='strength'&&s.completedAt);
  if(!parent)throw new Error('Save your strength workout first.');
  if(state.history.some(s=>s.afterWorkoutId===workoutId&&s.kind==='cardio'))return state;
- const result=cardioS.safeParse(input);
- if(!result.success)throw new Error('Check your cardio values: distance must be 0–10,000 and heart rate a whole number from 1–300.');
- const cardio=result.data;
- if(cardio.duration===null||cardio.duration<=0)throw new Error('Enter a duration greater than 0 minutes (up to 10,000).');
+ const cardio=validateCardio(input);
  const session:Session={id:uid(),queueId:null,templateId:state.templates.find(t=>t.kind==='cardio')?.id??parent.templateId,name:`${parent.name.slice(0,88)} · cardio`,kind:'cardio',cycle:parent.cycle,startedAt:now,completedAt:now,entries:[],cardio,afterWorkoutId:parent.id,notes:''};
- return {...state,history:[session,...state.history]};
+ return {...state,history:[session,...state.history].sort((a,b)=>b.completedAt!.localeCompare(a.completedAt!))};
 }
 export function parseState(value:unknown):AppState{
  const state=stateSchema.parse(value),libIds=new Set(state.library.map(e=>e.id)),templateIds=new Set(state.templates.map(t=>t.id));
  if(libIds.size!==state.library.length||templateIds.size!==state.templates.length||new Set(state.queue.map(q=>q.id)).size!==state.queue.length)throw new Error('Duplicate identifiers in backup.');
  if(state.defaultOrder.some(id=>!templateIds.has(id))||state.queue.some(q=>!templateIds.has(q.templateId))||state.templates.some(t=>t.exercises.some(e=>!libIds.has(e.exerciseId))))throw new Error('Backup contains missing exercise or routine references.');
+ for(const ex of state.library)canonicalExerciseId(state,ex.id);
+ if(state.planDays&&(new Set(state.planDays.map(d=>d.id)).size!==state.planDays.length||state.planDays.some(d=>!templateIds.has(d.templateId)||d.exercises.some(e=>!libIds.has(e.exerciseId)))||JSON.stringify(state.planDays.map(d=>d.templateId))!==JSON.stringify(state.defaultOrder)))throw new Error('The saved overall plan is invalid.');
  if(state.draft&&!state.queue.some(q=>q.id===state.draft!.queueId&&q.templateId===state.draft!.templateId))throw new Error('The saved workout is missing from the queue.');
  for(const session of [...state.history,...(state.draft?[state.draft]:[])]){
  if(!templateIds.has(session.templateId)||session.entries.some(e=>!libIds.has(e.exerciseId)))throw new Error('Workout references are incomplete.');
